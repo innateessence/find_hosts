@@ -24,6 +24,7 @@ In other words, this finds most of the devices in your local network that have a
 * I wrote this in less than a day, having next to no previous golang experience.
 * I solved this in a hacky way that has an extremely low false negative rate, but the cost is it sends out 10 requests for every possible IP in your local network.
 * Thism means it will send 256 * 10 requests and attempt to identify the real sender of the packet
+* There are no false positives in my tests. But there are sometimes false negatives. These are rare.
 
 Disclaimer: I'm not a networking guy and hacked this together very quickly.
 

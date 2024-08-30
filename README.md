@@ -15,6 +15,7 @@ In other words, this finds most of the devices in your local network that have a
 * I wanted to get my feet wet with writing `go` code and how `go` handles concurrency. It's nice.
 * `ping` doesn't really handle the use-case of checking your whole network very well, so...
 * I enjoy having as few 3rd party dependencies as possible
+* You learn new things by writing your own tools, and it's a good choice whenever you have the allowance for mistakes to be made.
 
 ## Running this flooded my network with roughly 2,5000 ICMP packets
 

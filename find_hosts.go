@@ -71,7 +71,7 @@ func getLocalIP(ifaceName string) (string, error) {
 			continue
 		}
 
-		if ifaceName == "" || !strings.Contains(iface.Name, ifaceName) {
+		if ifaceName == "" || !(iface.Name == ifaceName) {
 			continue
 		}
 
@@ -118,7 +118,7 @@ func ping(addr string, seq int) (string, error) {
 	defer c.Close()
 
 	// Prepare the ICMP message
-  id := os.Getpid() & 0xffff
+	id := os.Getpid() & 0xffff
 	msg := icmp.Message{
 		Type: ipv4.ICMPTypeEcho,
 		Code: 0,
@@ -192,28 +192,36 @@ func alreadyInArray(ip net.IP, list *[]net.IP) bool {
 
 func pingRange(ipRange []net.IP, retries int) []net.IP {
 	aliveIps := []net.IP{}
-	var mu sync.Mutex                  // To safely append to aliveIps
-	limiter := make(chan struct{}, 128) // int here is the number of concurrent pings or 'threads'
+	var mu sync.Mutex                   // To safely append to aliveIps
+	limiter := make(chan struct{}, 256) // int here is the number of concurrent pings or 'threads'
 
 	var wg sync.WaitGroup // WaitGroup to wait for all goroutines to finish
 
-	for i := 0; i < retries; i++ {
-    seq := i
+	for i := 0; i <= retries; i++ {
+		seq := i + 1
 		for _, ip := range ipRange {
 
-      mu.Lock()
+			mu.Lock()
 			if alreadyInArray(ip, &aliveIps) {
-        // skip spamming devices we've already identified
-        mu.Unlock()
+				// skip spamming devices we've already identified
+				// fmt.Println("Skipping: ", ip.String())
+				mu.Unlock()
 				continue
 			}
-      mu.Unlock()
+			mu.Unlock()
 
 			limiter <- struct{}{} // Acquire a token
 			wg.Add(1)             // Increment the WaitGroup counter
 
 			go func(ip net.IP, wg *sync.WaitGroup) {
+				defer func() { <-limiter }() // release the token
+				defer wg.Done()              // Decrement the WaitGroup counter
+				// fmt.Println("pinging: ", ip.String(), "with seq: ", seq)
 				respIP, err := ping(ip.String(), seq)
+				// if err != nil {
+				// 	fmt.Println("error: ", err)
+				// }
+
 				if err == nil {
 					sendingIp := net.ParseIP(respIP)
 					mu.Lock() // Lock to safely append to the slice
@@ -222,11 +230,9 @@ func pingRange(ipRange []net.IP, retries int) []net.IP {
 					}
 					mu.Unlock()
 				}
-        func() { <- limiter }() // release the token
-        wg.Done()
 			}(ip, &wg)
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	wg.Wait()      // Wait for all goroutines to finish
@@ -265,7 +271,9 @@ func main() {
 		fmt.Println("This program must be run on a /24 network")
 	}
 
-	aliveIPs := pingRange(possibleIps, 10)
+	aliveIPs := pingRange(possibleIps, 25) // ping every host up to N times
+
+	// Sort the IPs
 	sort.Slice(aliveIPs, func(i, j int) bool {
 		left := ipToInt(aliveIPs[i])
 		right := ipToInt(aliveIPs[j])

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var timeoutOffset = time.Millisecond * 250 // how long we wait until we abort a `ping` request
+var timeoutOffset = time.Millisecond * 1000 // how long we wait until we abort a `ping` request
 
 func assertRoot() {
 	if os.Geteuid() != 0 {
@@ -103,71 +103,72 @@ func getCIDR(ip string) (string, error) {
 	return fmt.Sprintf("%s.%s.%s.0/24", ipArr[0], ipArr[1], ipArr[2]), nil
 }
 
-func ping(addr string, id int) (int, error) {
+func ping(addr string, seq int) (string, error) {
 	// Resolve the address
 	raddr, err := net.ResolveIPAddr("ip", addr)
 	if err != nil {
-		return -1, fmt.Errorf("Failed to resolve address: %s", err)
+		return "", fmt.Errorf("Failed to resolve address: %s", err)
 	}
 
 	// Create a new ICMP message
 	c, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
 	if err != nil {
-		return -1, fmt.Errorf("Failed to listen on ICMP: %s", err)
+		return "", fmt.Errorf("Failed to listen on ICMP: %s", err)
 	}
 	defer c.Close()
 
 	// Prepare the ICMP message
-	seq := 1 // Start with sequence number 1
+  id := os.Getpid() & 0xffff
 	msg := icmp.Message{
 		Type: ipv4.ICMPTypeEcho,
 		Code: 0,
 		Body: &icmp.Echo{
 			ID:   id,
 			Seq:  seq,
-			Data: []byte("HELLO-R-U-OK?"),
+			Data: []byte("HELLO-R-U-ALIVE?"),
 		},
 	}
 
 	// Marshal the message into bytes
 	msgBytes, err := msg.Marshal(nil)
 	if err != nil {
-		return -1, fmt.Errorf("Failed to marshal ICMP message: %s", err)
+		return "", fmt.Errorf("Failed to marshal ICMP message: %s", err)
 	}
 
 	// Send the ICMP message
 	_, err = c.WriteTo(msgBytes, raddr)
 	if err != nil {
-		return -1, fmt.Errorf("Failed to send ICMP message: %s", err)
+		return "", fmt.Errorf("Failed to send ICMP message: %s", err)
 	}
 
 	// Read the reply
 	reply := make([]byte, 1500)
 	c.SetDeadline(time.Now().Add(timeoutOffset))
-	n, _, err := c.ReadFrom(reply)
+	n, peer, err := c.ReadFrom(reply)
 	if err != nil {
 		if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
 			// Handle timeout as a ping failure
-			return -1, fmt.Errorf("Ping timeout")
+			return "", fmt.Errorf("Ping timeout")
 		}
-		return -1, fmt.Errorf("Failed to read ICMP reply: %s", err)
+		return "", fmt.Errorf("Failed to read ICMP reply: %s", err)
 	}
 
 	// Parse the reply
 	rm, err := icmp.ParseMessage(1, reply[:n])
 	if err != nil {
-		return -1, fmt.Errorf("Failed to parse ICMP reply: %s", err)
+		return "", fmt.Errorf("Failed to parse ICMP reply: %s", err)
 	}
 
 	if rm.Type == ipv4.ICMPTypeEchoReply {
 		echoReply := rm.Body.(*icmp.Echo)
 		// check if the reply is the one we are looking for
-		if string(echoReply.Data) == "HELLO-R-U-OK?" {
-			return echoReply.ID, nil
+
+		if string(echoReply.Data) == "HELLO-R-U-ALIVE?" {
+			return peer.String(), nil
 		}
 	}
 
-	return -1, fmt.Errorf("No valid reply")
+	return "", fmt.Errorf("No valid reply")
 }
 
 func incIP(ip net.IP) net.IP {
@@ -191,47 +192,41 @@ func alreadyInArray(ip net.IP, list *[]net.IP) bool {
 
 func pingRange(ipRange []net.IP, retries int) []net.IP {
 	aliveIps := []net.IP{}
-	var mu sync.Mutex                   // To safely append to aliveIps
-	limiter := make(chan struct{}, 256) // int here is the number of concurrent pings or 'threads'
+	var mu sync.Mutex                  // To safely append to aliveIps
+	limiter := make(chan struct{}, 128) // int here is the number of concurrent pings or 'threads'
 
 	var wg sync.WaitGroup // WaitGroup to wait for all goroutines to finish
 
 	for i := 0; i < retries; i++ {
-		for id, ip := range ipRange {
+    seq := i
+		for _, ip := range ipRange {
 
+      mu.Lock()
 			if alreadyInArray(ip, &aliveIps) {
+        // skip spamming devices we've already identified
+        mu.Unlock()
 				continue
 			}
+      mu.Unlock()
 
 			limiter <- struct{}{} // Acquire a token
 			wg.Add(1)             // Increment the WaitGroup counter
 
-			go func(ip net.IP) {
-				defer wg.Done()              // Decrement the counter when the goroutine completes
-				defer func() { <-limiter }() // Release the token
-
-				// fmt.Println("Pinging", ip.String(), "...")
-				repliedIdx, _ := ping(ip.String(), id)
-				if repliedIdx != -1 {
-					// Got a valid reply from one of the ICMP packets...
+			go func(ip net.IP, wg *sync.WaitGroup) {
+				respIP, err := ping(ip.String(), seq)
+				if err == nil {
+					sendingIp := net.ParseIP(respIP)
 					mu.Lock() // Lock to safely append to the slice
-					defer mu.Unlock()
-
-					if repliedIdx >= len(ipRange)-1 {
-						fmt.Println("repliedIdx out of range")
-						fmt.Println("Is something else sending ICMP packets to this machine?")
-						return
-					}
-
-					sendingIp := ipRange[repliedIdx]
-
 					if !alreadyInArray(sendingIp, &aliveIps) {
 						aliveIps = append(aliveIps, sendingIp)
 					}
+					mu.Unlock()
 				}
-			}(ip)
+        func() { <- limiter }() // release the token
+        wg.Done()
+			}(ip, &wg)
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	wg.Wait()      // Wait for all goroutines to finish
@@ -270,7 +265,7 @@ func main() {
 		fmt.Println("This program must be run on a /24 network")
 	}
 
-	aliveIPs := pingRange(possibleIps, 5)
+	aliveIPs := pingRange(possibleIps, 10)
 	sort.Slice(aliveIPs, func(i, j int) bool {
 		left := ipToInt(aliveIPs[i])
 		right := ipToInt(aliveIPs[j])

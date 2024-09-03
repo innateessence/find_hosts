@@ -4,7 +4,6 @@
 
 * This is a single go 'script' which locates all the devices that reply to ICMP packets on your local network
 * Most devices reply to these packets by default unless you or a sys admin explicitly configures the device not too.
-* It also tends to do this within less than a second. Should take roughly 500ms on average based on my tests.
 
 In other words, this finds most of the devices in your local network that have an IP address
 
@@ -17,13 +16,13 @@ In other words, this finds most of the devices in your local network that have a
 * I enjoy having as few 3rd party dependencies as possible
 * You learn new things by writing your own tools, and it's a good choice whenever you have the allowance for mistakes to be made.
 
-## Running this flooded my network with roughly 2,5000 ICMP packets
+## Running this flooded my network with roughly N ICMP packets
 
 * This isn't really a big deal. But you're right. It's non optimal.
 * It appears that when you perform a `ping` concurrently, you get packets in unexpected places.
 * I wrote this in less than a day, having next to no previous golang experience.
 * I solved this in a hacky way that has an extremely low false negative rate, but the cost is it sends out 10 requests for every possible IP in your local network.
-* Thism means it will send 256 * 10 requests and attempt to identify the real sender of the packet
+* This means it will send 256 * N requests and attempt to identify the real sender of the packet.
 * There are no false positives in my tests. But there are sometimes false negatives. These are rare.
 
 Disclaimer: I'm not a networking guy and hacked this together very quickly.
